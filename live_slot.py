@@ -49,11 +49,18 @@ def observe(facts, scenario, now):
             and repo["default_branch"] == branch["name"] == "trunk"
             and prod["ref"] == REF and branch["protected"] is True
             and branch["commit"]["sha"] == prod["sha"]
+            and branch["commit"]["commit"]["tree"]["sha"] == prod["tree"]
             and re.fullmatch(r"[0-9a-f]{40}", prod["sha"]),
             "production protected source moved or disagrees")
     require(workflow["id"] == scenario["scheduled_workflow_id"]
             and workflow["path"] == WORKFLOW_PATH and workflow["state"] == "active",
             "production scheduled workflow moved or disagrees")
+    if "final_branch" in facts:
+        final = facts["final_branch"]
+        require(final["name"] == "trunk" and final["protected"] is True
+                and final["commit"]["sha"] == prod["sha"]
+                and final["commit"]["commit"]["tree"]["sha"] == prod["tree"],
+                "production protected source moved after schedule read")
     slot = instant(scenario["slot"])
     deadline = instant(scenario["deadline"])
     require(slot == schedule_slot(now) and deadline == slot + DURATION and deadline <= now,
@@ -106,6 +113,7 @@ def public_observation(scenario):
     facts["scheduled_runs"] = page["workflow_runs"]
     require(page["total_count"] == len(facts["scheduled_runs"]) and page["total_count"] < 100,
             "public native scheduled listing incomplete")
+    facts["final_branch"] = public_get("branches/trunk")
     read_at = datetime.now(timezone.utc)
     return {"read_at": read_at.isoformat(), "facts": facts,
             "observation": observe(facts, scenario, read_at)}
