@@ -12,9 +12,9 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 if __package__:
-    from .live_slot import public_observation
+    from .live_slot import observe, PRODUCTION
 else:
-    from live_slot import public_observation
+    from live_slot import observe, PRODUCTION
 
 
 ROOT = Path(__file__).resolve().parent
@@ -56,11 +56,12 @@ def signed(admission_raw, signature_raw, allowed_signers):
 def validate_admission(payload, scenario, binding, when):
     need(set(payload) == {
         "schema", "issue", "id", "operator", "slot", "deadline", "miss_record_sha256",
-        "producer", "production", "action", "issued_at", "expires_at",
+        "producer", "production", "action", "issued_at", "expires_at", "native_observation_sha256",
     }, "operator authorization schema disagrees")
     need(payload["schema"] == "aitm.live-shadow-operator-authorization/v1" and payload["issue"] == 338
          and payload["action"] == "recover-live-missed-slot-in-shadow"
-         and hex_id(payload["id"], 32) and hex_id(payload["miss_record_sha256"], 64),
+         and hex_id(payload["id"], 32) and hex_id(payload["miss_record_sha256"], 64)
+         and hex_id(payload["native_observation_sha256"], 64),
          "operator recovery intent disagrees")
     need(payload["slot"] == scenario["slot"] and payload["deadline"] == scenario["deadline"]
          and payload["production"] == scenario["production"]
@@ -115,18 +116,31 @@ def main():
     need(event["inputs"]["admission_id"] == payload["id"], "dispatch admission ID disagrees")
     now = datetime.now(timezone.utc)
     validate_admission(payload, scenario, binding, now)
-    observation = public_observation(scenario)
-    need(instant(observation["read_at"]) <= instant(payload["expires_at"]),
-         "production metadata check outlived authorization")
+    observation_raw = b64decode(event["inputs"]["native_observation"], validate=True)
+    need(sha256(observation_raw).hexdigest() == payload["native_observation_sha256"],
+         "signed native production observation digest disagrees")
+    observation = json.loads(observation_raw)
+    observed_at = instant(observation["read_at"])
+    need(instant(payload["deadline"]) <= observed_at <= instant(payload["issued_at"])
+         and observe(observation["facts"], scenario, observed_at) == observation["observation"],
+         "controller's authenticated production proof disagrees")
+    with TemporaryDirectory(prefix="aitm-public-ref-") as home:
+        public_ref = subprocess.check_output(
+            ["git", "ls-remote", "--exit-code", f"https://github.com/{PRODUCTION}.git", "refs/heads/trunk"],
+            text=True, cwd=home, timeout=30, env={
+                "PATH": env["PATH"], "HOME": home, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
+            },
+        ).strip()
+    need(public_ref == f"{scenario['production']['sha']}\trefs/heads/trunk",
+         "public production Git ref moved after admission")
     args.output.mkdir()
-    (args.output / "production-observation.json").write_text(
-        json.dumps(observation, sort_keys=True, indent=2) + "\n"
-    )
+    (args.output / "production-observation.json").write_bytes(observation_raw)
     (args.output / "authorization.json").write_bytes(raw)
     (args.output / "authorization.sig").write_bytes(signature)
     doc = {"schema": "aitm.live-shadow-operator-preflight/v1", "producer": binding,
            "authorization_sha256": sha256(raw).hexdigest(), "authorized_at": now.isoformat(),
-           "admission_id": payload["id"], "production": scenario["production"]}
+           "admission_id": payload["id"], "production": scenario["production"],
+           "public_git_ref": public_ref, "native_observation_sha256": sha256(observation_raw).hexdigest()}
     (args.output / "preflight.json").write_text(json.dumps(doc, sort_keys=True, indent=2) + "\n")
     print(json.dumps(doc, sort_keys=True))
 

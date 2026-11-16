@@ -11,6 +11,10 @@ on:
         description: Base64 canonical authorization
         required: true
         type: string
+      native_observation:
+        description: Base64 signed production schedule observation
+        required: true
+        type: string
       signature:
         description: Base64 detached operator signature
         required: true
