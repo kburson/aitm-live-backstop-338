@@ -1,10 +1,8 @@
 """Read the actual GitHub schedule using fixed public, read-only production routes."""
 
 from datetime import datetime, timedelta, timezone
-import json
 import re
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 
 PRODUCTION = "kburson/aitm"
@@ -92,28 +90,3 @@ def observe(facts, scenario, now):
         "prior_slot_late_run_ids": sorted(prior_late), "current_slot_late_run_ids": sorted(current_late),
     }
 
-
-def public_get(path):
-    """Hosted runner deliberately sends no credential to the production API."""
-    request = Request(f"https://api.github.com/repos/{PRODUCTION}/{path}".rstrip("/"), headers={
-        "Accept": "application/vnd.github+json", "User-Agent": "aitm-338-shadow-recovery",
-        "Cache-Control": "no-cache",
-    })
-    with urlopen(request, timeout=20) as response:
-        raw = response.read(8 * 1024 * 1024 + 1)
-        require(response.status == 200 and len(raw) <= 8 * 1024 * 1024, "incomplete production response")
-        return json.loads(raw)
-
-
-def public_observation(scenario):
-    w = scenario["scheduled_workflow_id"]
-    facts = {"repository": public_get(""), "branch": public_get("branches/trunk"),
-             "workflow": public_get(f"actions/workflows/{w}")}
-    page = public_get(scheduled_route(w, scenario["slot"]))
-    facts["scheduled_runs"] = page["workflow_runs"]
-    require(page["total_count"] == len(facts["scheduled_runs"]) and page["total_count"] < 100,
-            "public native scheduled listing incomplete")
-    facts["final_branch"] = public_get("branches/trunk")
-    read_at = datetime.now(timezone.utc)
-    return {"read_at": read_at.isoformat(), "facts": facts,
-            "observation": observe(facts, scenario, read_at)}
